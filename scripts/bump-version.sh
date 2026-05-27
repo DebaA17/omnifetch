@@ -29,7 +29,9 @@ print(f"Updated internal/version/version.go to v{version}")
 PY
 
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
-	git tag -f "v${version}"
+	# Create or update an annotated tag non-interactively so this script
+	# never opens the editor for a tag message.
+	git tag -f -a -m "v${version}" "v${version}"
 	printf 'Created/updated git tag v%s\n' "$version"
 else
 	printf 'Skipped git tag creation (no commit yet to tag)\n'
