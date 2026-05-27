@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	_ "embed"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +22,9 @@ import (
 	"omnifetch/internal/utils"
 	"omnifetch/internal/version"
 )
+
+//go:embed banner.txt
+var bannerData []byte
 
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -314,12 +318,11 @@ Notes:
 }
 
 func printBanner(out io.Writer) {
-	b, err := os.ReadFile("assets/banner.txt")
-	if err != nil {
+	if len(bannerData) == 0 {
 		return
 	}
-	fmt.Fprintln(out, string(b))
-	if len(b) > 0 && b[len(b)-1] != '\n' {
+	fmt.Fprintln(out, string(bannerData))
+	if bannerData[len(bannerData)-1] != '\n' {
 		fmt.Fprintln(out)
 	}
 }

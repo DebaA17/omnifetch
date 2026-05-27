@@ -23,6 +23,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Read source version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^var Current = "\(v[^\"]*\)"/\1/p' internal/version/version.go | head -n1)
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -52,7 +58,7 @@ jobs:
           file: ./Dockerfile
           push: ${{ github.event_name != 'pull_request' }}
           build-args: |
-            OMNIFETCH_VERSION=${{ github.ref_name }}
+            OMNIFETCH_VERSION=${{ env.VERSION }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

@@ -1,6 +1,7 @@
 name: omnifetch
 base: core22
-version: git
+adopt-info: omnifetch
+version: 0+unknown
 summary: OmniFetch public-content downloader
 description: |
   OmniFetch is a CLI downloader for public files, public articles, and media
@@ -22,7 +23,15 @@ parts:
     source: .
     build-snaps:
       - go/1.25/stable
+    override-pull: |
+      craftctl default
+      if [ -f "${CRAFT_PROJECT_DIR:-.}/VERSION" ]; then
+        craftctl set version="$(cat "${CRAFT_PROJECT_DIR:-.}/VERSION")"
+      elif [ -f "${CRAFT_PART_SRC}/VERSION" ]; then
+        craftctl set version="$(cat "${CRAFT_PART_SRC}/VERSION")"
+      fi
     override-build: |
-      go build -trimpath -ldflags "-s -w -X omnifetch/internal/version.Current=${SNAPCRAFT_PROJECT_VERSION}" -o "$CRAFT_PART_INSTALL/bin/omnifetch" ./cmd/omnifetch
+      VERSION=$(sed -n 's/^var Current = "\(v[^\"]*\)"/\1/p' internal/version/version.go | head -n1)
+      go build -trimpath -ldflags "-s -w -X omnifetch/internal/version.Current=${VERSION}" -o "$CRAFT_PART_INSTALL/bin/omnifetch" ./cmd/omnifetch
     stage-packages:
       - ca-certificates

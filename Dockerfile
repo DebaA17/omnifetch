@@ -14,12 +14,15 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X omnifetch/internal/versi
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates && adduser -D -g '' omnifetch
+RUN apk add --no-cache ca-certificates && adduser -D -g '' omnifetch \
+	&& mkdir -p /home/omnifetch/downloads \
+	&& chown -R omnifetch:omnifetch /home/omnifetch
 
-WORKDIR /app
+ENV HOME=/home/omnifetch
+
+WORKDIR /home/omnifetch
 
 COPY --from=build /out/omnifetch /usr/local/bin/omnifetch
-COPY assets/banner.txt /app/assets/banner.txt
 
 USER omnifetch
 
