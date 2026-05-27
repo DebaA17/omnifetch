@@ -12,25 +12,46 @@ permissions:
 jobs:
   build:
     name: Build (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
 
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: linux-amd64
+            runner: ubuntu-latest
             goos: linux
             goarch: amd64
             exe: omnifetch
             archive_ext: zip
+          - name: linux-arm64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            exe: omnifetch
+            archive_ext: zip
           - name: windows-amd64
+            runner: windows-latest
             goos: windows
             goarch: amd64
             exe: omnifetch.exe
             archive_ext: zip
+          - name: windows-arm64
+            runner: windows-latest
+            goos: windows
+            goarch: arm64
+            exe: omnifetch.exe
+            archive_ext: zip
           - name: darwin-amd64
+            runner: macos-latest
             goos: darwin
             goarch: amd64
+            exe: omnifetch
+            archive_ext: zip
+          - name: darwin-arm64
+            runner: macos-latest
+            goos: darwin
+            goarch: arm64
             exe: omnifetch
             archive_ext: zip
 
@@ -55,22 +76,38 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
           GOFLAGS: -trimpath
         run: |
           mkdir -p dist
           go build -ldflags "-s -w -X omnifetch/internal/version.Current=v${VERSION}" -o "dist/${{ matrix.exe }}" ./cmd/omnifetch
 
-      - name: Package release artifact
+      - name: Package release artifact (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           artifact="omnifetch-v${VERSION}-${{ matrix.name }}.${{ matrix.archive_ext }}"
           rm -f "$artifact" checksums.txt
           cp README.md dist/
+          cp LICENSE dist/
           mkdir -p dist/assets
           cp assets/banner.txt dist/assets/
-          (cd dist && zip -r "../$artifact" "${{ matrix.exe }}" README.md assets/banner.txt)
+          (cd dist && zip -r "../$artifact" "${{ matrix.exe }}" README.md LICENSE assets/banner.txt)
           sha256sum "$artifact" > checksums.txt
+
+      - name: Package release artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $artifact = "omnifetch-v$env:VERSION-${{ matrix.name }}.${{ matrix.archive_ext }}"
+          Remove-Item $artifact, checksums.txt -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force dist/assets | Out-Null
+          Copy-Item README.md, LICENSE -Destination dist -Force
+          Copy-Item assets/banner.txt dist/assets -Force
+          Compress-Archive -Path dist/${{ matrix.exe }}, dist/README.md, dist/LICENSE, dist/assets/banner.txt -DestinationPath $artifact
+          $hash = (Get-FileHash $artifact -Algorithm SHA256).Hash.ToLower()
+          "$hash  $artifact" | Out-File -Encoding ascii checksums.txt
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

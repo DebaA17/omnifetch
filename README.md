@@ -33,6 +33,20 @@ go build ./cmd/omnifetch
 ./omnifetch https://example.com/file.zip
 ```
 
+
+### Docker
+
+```bash
+docker pull ghcr.io/debaa17/omnifetch:latest
+docker run --rm ghcr.io/debaa17/omnifetch:latest --version
+```
+
+### Snap
+
+```bash
+sudo snap install omnifetch
+```
+
 ### Tooling prerequisites
 
 - Go `1.25+` (required by `github.com/lrstanley/go-ytdlp`)
