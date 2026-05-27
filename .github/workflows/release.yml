@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            goos: linux
+            goarch: amd64
+            exe: omnifetch
+            archive_ext: zip
+          - name: windows-amd64
+            goos: windows
+            goarch: amd64
+            exe: omnifetch.exe
+            archive_ext: zip
+          - name: darwin-amd64
+            goos: darwin
+            goarch: amd64
+            exe: omnifetch
+            archive_ext: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          printf '%s\n' "$version" > VERSION
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOFLAGS: -trimpath
+        run: |
+          mkdir -p dist
+          go build -ldflags "-s -w -X omnifetch/internal/version.Current=v${VERSION}" -o "dist/${{ matrix.exe }}" ./cmd/omnifetch
+
+      - name: Package release artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="omnifetch-v${VERSION}-${{ matrix.name }}.${{ matrix.archive_ext }}"
+          rm -f "$artifact" checksums.txt
+          cp README.md dist/
+          mkdir -p dist/assets
+          cp assets/banner.txt dist/assets/
+          (cd dist && zip -r "../$artifact" "${{ matrix.exe }}" README.md assets/banner.txt)
+          sha256sum "$artifact" > checksums.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            omnifetch-v${{ env.VERSION }}-${{ matrix.name }}.${{ matrix.archive_ext }}
+            checksums.txt
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Merge checksums
+        shell: bash
+        run: |
+          cat artifacts/**/checksums.txt > checksums.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*.zip
+            checksums.txt

@@ -1,0 +1,45 @@
+# Build outputs
+/omnifetch
+/downloads/
+
+# Partial download state
+/.omnifetch.partial/
+
+# Logs
+*.log
+
+# IDE / editor noise
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Go coverage
+*.out
+coverage.txt# Build outputs
+/omnifetch
+/downloads/
+
+# Partial download state
+/.omnifetch.partial/
+
+# Logs
+*.log
+
+# IDE / editor noise
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Go coverage
+*.out
+coverage.txt
