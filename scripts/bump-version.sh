@@ -26,6 +26,10 @@ if count != 1:
     raise SystemExit("failed to update internal/version/version.go")
 path.write_text(new_text, encoding="utf-8")
 print(f"Updated internal/version/version.go to v{version}")
+
+# Keep snapcraft's adopt-info version in sync when a VERSION file is present.
+Path("VERSION").write_text(f"v{version}\n", encoding="utf-8")
+print("Updated VERSION")
 PY
 
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
@@ -36,3 +40,7 @@ if git rev-parse --verify HEAD >/dev/null 2>&1; then
 else
 	printf 'Skipped git tag creation (no commit yet to tag)\n'
 fi
+
+printf 'Building ./omnifetch...\n'
+go build -trimpath -o omnifetch ./cmd/omnifetch
+printf 'Built ./omnifetch\n'
