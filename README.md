@@ -33,14 +33,6 @@ go build ./cmd/omnifetch
 ./omnifetch https://example.com/file.zip
 ```
 
-
-### Docker
-
-```bash
-docker pull ghcr.io/debaa17/omnifetch:latest
-docker run --rm ghcr.io/debaa17/omnifetch:latest --version
-```
-
 ### Snap
 
 ```bash
