@@ -23,6 +23,17 @@ import (
 	"omnifetch/internal/version"
 )
 
+const (
+	ansiReset  = "\033[0m"
+	ansiDim    = "\033[2m"
+	ansiCyan   = "\033[96m"
+	ansiGreen  = "\033[92m"
+	ansiBlue   = "\033[94m"
+	ansiYellow = "\033[93m"
+	ansiRed    = "\033[91m"
+	ansiBold   = "\033[1m"
+)
+
 //go:embed banner.txt
 var bannerData []byte
 
@@ -41,8 +52,6 @@ func main() {
 			return
 		}
 	}
-
-	printBanner(os.Stdout)
 
 	// Important: don't spam stderr while the TUI is running (it corrupts the screen).
 	// Default to a local log file; allow opt-in terminal logs via env.
@@ -63,8 +72,20 @@ func main() {
 	fs.SetOutput(io.Discard)
 	outDir := fs.String("out", "downloads", "output directory")
 	parallel := fs.Int("j", 3, "max parallel jobs")
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		msg := err.Error()
+		if strings.HasPrefix(msg, "flag provided but not defined: ") {
+			unknown := strings.TrimPrefix(msg, "flag provided but not defined: ")
+			fmt.Fprintf(os.Stderr, "error: unrecognized arguments: %s\n", unknown)
+		} else {
+			fmt.Fprintf(os.Stderr, "error: %s\n", msg)
+		}
+		fmt.Fprintln(os.Stderr, "Run 'omnifetch --help' for usage.")
+		os.Exit(2)
+	}
 	urlArgs := fs.Args()
+
+	printBanner(os.Stdout)
 
 	app, err := engine.NewApp(engine.Config{
 		Log:               log,
@@ -131,13 +152,18 @@ func runCLI(ctx context.Context, app *engine.App) int {
 		const maxRows = 18
 		snap := app.Snapshot()
 		i := 0
-		for _, j := range snap {
+		for _, baseJob := range snap {
 			if i >= maxRows {
 				fmt.Printf("… %d more\n", len(snap)-maxRows)
 				break
 			}
 			i++
+			j := baseJob
+			if live, ok := st.jobs[baseJob.ID]; ok {
+				j = live
+			}
 			pct := ""
+			bar := ""
 			spinner := ""
 			if j.State == models.StateDownloading || j.State == models.StateRetrying {
 				spinner = progressSpinner(time.Now())
@@ -146,18 +172,52 @@ func runCLI(ctx context.Context, app *engine.App) int {
 			if spinner != "" && j.BytesDone == 0 {
 				stateLabel = stateLabel + " " + spinner
 			}
-			if j.BytesTotal > 0 && j.BytesDone > 0 {
-				pct = fmt.Sprintf(" %.1f%%", 100*float64(j.BytesDone)/float64(j.BytesTotal))
+			if j.State == models.StateSuccess {
+				pct = ""
+				bar = ""
+			} else if j.BytesTotal > 0 {
+				done := j.BytesDone
+				if done < 0 {
+					done = 0
+				}
+				p := 100 * float64(done) / float64(j.BytesTotal)
+				if p < 0 {
+					p = 0
+				}
+				if p > 100 {
+					p = 100
+				}
+				pct = fmt.Sprintf(" %.1f%%", p)
+				bar = " " + progressBar(p, 20)
+			} else if spinner != "" && j.BytesDone > 0 {
+				pct = " " + utils.HumanBytes(j.BytesDone) + " downloaded"
+				bar = " " + progressBarIndeterminate(j.BytesDone, 20)
 			} else if spinner != "" {
 				pct = " starting " + spinner
+				bar = " " + progressBar(0, 20)
 			}
 			errPart := ""
 			if j.State == models.StateError && j.ErrorSummary != "" {
 				errPart = " — " + j.ErrorSummary
 			}
+			stateText := stateLabel
+			switch j.State {
+			case models.StateSuccess:
+				stateText = ansiGreen + stateLabel + ansiReset
+			case models.StateDownloading, models.StateRetrying:
+				stateText = ansiYellow + stateLabel + ansiReset
+			case models.StateError, models.StateCanceled:
+				stateText = ansiRed + stateLabel + ansiReset
+			case models.StateQueued:
+				stateText = ansiBlue + stateLabel + ansiReset
+			}
+			kindText := j.Kind.String()
+			if j.Kind == models.JobKindMedia {
+				kindText = ansiCyan + kindText + ansiReset
+			}
 			fmt.Printf("[%s] %-7s %s%s • %s%s\n",
-				stateLabel,
-				j.Kind.String(),
+				stateText,
+				kindText,
 				utils.HumanBytes(j.BytesDone),
 				func() string {
 					if j.BytesTotal > 0 {
@@ -166,11 +226,20 @@ func runCLI(ctx context.Context, app *engine.App) int {
 					return ""
 				}(),
 				utils.HumanRate(j.SpeedBpsEMA),
-				pct+errPart,
+				bar+pct+errPart,
 			)
 			fmt.Printf("  %s\n", j.URL.String())
 			if j.OutputPath != "" && (j.State == models.StateSuccess) {
 				fmt.Printf("  -> %s\n", j.OutputPath)
+				size := j.BytesDone
+				if size <= 0 {
+					if st, err := os.Stat(j.OutputPath); err == nil && !st.IsDir() {
+						size = st.Size()
+					}
+				}
+				if size > 0 {
+					fmt.Printf("  %ssize%s: %s\n", ansiDim, ansiReset, utils.HumanBytes(size))
+				}
 			}
 		}
 	}
@@ -255,6 +324,51 @@ func progressSpinner(now time.Time) string {
 	return frames[idx%len(frames)]
 }
 
+func progressBar(percent float64, width int) string {
+	if width <= 0 {
+		width = 20
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	filled := int((percent / 100) * float64(width))
+	if filled > width {
+		filled = width
+	}
+	if filled < 0 {
+		filled = 0
+	}
+	return "[" + strings.Repeat("█", filled) + strings.Repeat("░", width-filled) + "]"
+}
+
+func progressBarIndeterminate(seed int64, width int) string {
+	if width <= 0 {
+		width = 20
+	}
+	if seed < 0 {
+		seed = -seed
+	}
+	window := width / 4
+	if window < 2 {
+		window = 2
+	}
+	if window > width {
+		window = width
+	}
+	track := make([]rune, width)
+	for i := range track {
+		track[i] = '░'
+	}
+	start := int(seed % int64(width))
+	for i := 0; i < window; i++ {
+		track[(start+i)%width] = '█'
+	}
+	return "[" + string(track) + "]"
+}
+
 func promptOneURL(ctx context.Context, in io.Reader, out io.Writer) string {
 	fmt.Fprintln(out, "Enter the URL to download:")
 	fmt.Fprintln(out)
@@ -321,8 +435,17 @@ func printBanner(out io.Writer) {
 	if len(bannerData) == 0 {
 		return
 	}
-	fmt.Fprintln(out, string(bannerData))
-	if bannerData[len(bannerData)-1] != '\n' {
-		fmt.Fprintln(out)
+	for _, line := range strings.Split(strings.TrimRight(string(bannerData), "\n"), "\n") {
+		styled := ansiCyan + line + ansiReset
+		switch {
+		case strings.Contains(line, "OMNIFETCH"):
+			styled = ansiBold + ansiBlue + line + ansiReset
+		case strings.Contains(line, "by debasis"):
+			styled = ansiBold + ansiGreen + line + ansiReset
+		case strings.Contains(line, "github.com/"):
+			styled = ansiBold + ansiYellow + line + ansiReset
+		}
+		fmt.Fprintln(out, styled)
 	}
+	fmt.Fprintln(out)
 }

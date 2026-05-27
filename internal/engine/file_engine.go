@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"omnifetch/internal/downloader"
@@ -77,7 +78,7 @@ func (*FileEngine) CanHandle(u *url.URL) bool {
 
 func (e *FileEngine) Run(ctx context.Context, job models.Job, emit EmitFunc) (string, error) {
 	downloadURL := rewriteGitHubRawURL(job.URL)
-	resolvedURL, ct, cd := e.resolveDownloadURL(ctx, downloadURL)
+	resolvedURL, ct, cd, expectedTotal := e.resolveDownloadURL(ctx, downloadURL)
 	if resolvedURL == nil {
 		resolvedURL = downloadURL
 	}
@@ -101,19 +102,27 @@ func (e *FileEngine) Run(ctx context.Context, job models.Job, emit EmitFunc) (st
 		last:  lastEmit,
 	}
 
-	res, err := e.downloadStreaming(ctx, resolvedURL, outPath, reporter)
+	res, err := e.downloadStreaming(ctx, resolvedURL, outPath, expectedTotal, reporter)
 	if err != nil {
 		return "", err
 	}
+	finalBytes := res.Bytes
+	finalTotal := res.Bytes
+	zeroSpeed := 0.0
+	oneWorker := 1
 	emit(events.JobUpdated{
-		Base:       events.Base{T: time.Now()},
-		JobID:      job.ID,
-		OutputPath: ptrStr(res.OutputPath),
+		Base:        events.Base{T: time.Now()},
+		JobID:       job.ID,
+		BytesDone:   &finalBytes,
+		BytesTotal:  &finalTotal,
+		SpeedBpsEMA: &zeroSpeed,
+		Workers:     &oneWorker,
+		OutputPath:  ptrStr(res.OutputPath),
 	})
 	return res.OutputPath, nil
 }
 
-func (e *FileEngine) downloadStreaming(ctx context.Context, u *url.URL, outPath string, r *jobReporter) (downloader.Result, error) {
+func (e *FileEngine) downloadStreaming(ctx context.Context, u *url.URL, outPath string, expectedTotal int64, r *jobReporter) (downloader.Result, error) {
 	tmpPath := outPath + ".part"
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return downloader.Result{}, omnierr.Wrap(omnierr.CodePermissionDenied, "Cannot create download directory.", err, omnierr.Sev(omnierr.SeverityFatal))
@@ -161,8 +170,12 @@ func (e *FileEngine) downloadStreaming(ctx context.Context, u *url.URL, outPath 
 	}
 
 	total := contentLengthFromResponse(resp, start)
-	var bytesDone = start
-	var lastBytes = bytesDone
+	if total <= 0 && expectedTotal > 0 {
+		total = expectedTotal
+	}
+	var bytesDone int64
+	atomic.StoreInt64(&bytesDone, start)
+	var lastBytes = start
 	last := time.Now()
 	var speedEMA utils.EMA
 	var copiedErr error
@@ -199,7 +212,7 @@ func (e *FileEngine) downloadStreaming(ctx context.Context, u *url.URL, outPath 
 					doneCh <- copiedErr
 					return
 				}
-				bytesDone += int64(n)
+				atomic.AddInt64(&bytesDone, int64(n))
 			}
 			if readErr != nil {
 				if errors.Is(readErr, io.EOF) {
@@ -211,6 +224,8 @@ func (e *FileEngine) downloadStreaming(ctx context.Context, u *url.URL, outPath 
 			}
 		}
 	}()
+
+	r.Progress(downloader.Progress{BytesDone: atomic.LoadInt64(&bytesDone), BytesTotal: total, Bps: 0, Workers: 1})
 
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
@@ -241,19 +256,22 @@ func (e *FileEngine) downloadStreaming(ctx context.Context, u *url.URL, outPath 
 			if copiedErr != nil {
 				return downloader.Result{}, copiedErr
 			}
-			return downloader.Result{OutputPath: outPath, Bytes: bytesDone}, nil
+			finalDone := atomic.LoadInt64(&bytesDone)
+			r.Progress(downloader.Progress{BytesDone: finalDone, BytesTotal: total, Bps: 0, Workers: 1})
+			return downloader.Result{OutputPath: outPath, Bytes: finalDone}, nil
 		case <-ticker.C:
 			now := time.Now()
 			dt := now.Sub(last)
-			delta := bytesDone - lastBytes
+			done := atomic.LoadInt64(&bytesDone)
+			delta := done - lastBytes
 			bps := 0.0
 			if dt > 0 {
 				bps = float64(delta) / dt.Seconds()
 			}
 			speed := speedEMA.Add(bps, 2*time.Second, dt)
 			last = now
-			lastBytes = bytesDone
-			r.Progress(downloader.Progress{BytesDone: bytesDone, BytesTotal: total, Bps: speed, Workers: 1})
+			lastBytes = done
+			r.Progress(downloader.Progress{BytesDone: done, BytesTotal: total, Bps: speed, Workers: 1})
 		}
 	}
 }
@@ -311,9 +329,10 @@ type remoteProbe struct {
 	URL                *url.URL
 	ContentType        string
 	ContentDisposition string
+	ContentLength      int64
 }
 
-func (e *FileEngine) resolveDownloadURL(ctx context.Context, u *url.URL) (*url.URL, string, string) {
+func (e *FileEngine) resolveDownloadURL(ctx context.Context, u *url.URL) (*url.URL, string, string, int64) {
 	probe := func(method string, addRange bool) remoteProbe {
 		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
@@ -331,22 +350,23 @@ func (e *FileEngine) resolveDownloadURL(ctx context.Context, u *url.URL) (*url.U
 			return remoteProbe{}
 		}
 		if resp.StatusCode >= 400 {
-			return remoteProbe{URL: resp.Request.URL, ContentType: strings.ToLower(resp.Header.Get("Content-Type")), ContentDisposition: resp.Header.Get("Content-Disposition")}
+			return remoteProbe{URL: resp.Request.URL, ContentType: strings.ToLower(resp.Header.Get("Content-Type")), ContentDisposition: resp.Header.Get("Content-Disposition"), ContentLength: resp.ContentLength}
 		}
 		return remoteProbe{
 			URL:                resp.Request.URL,
 			ContentType:        strings.ToLower(resp.Header.Get("Content-Type")),
 			ContentDisposition: resp.Header.Get("Content-Disposition"),
+			ContentLength:      resp.ContentLength,
 		}
 	}
 
 	if p := probe(http.MethodHead, false); p.URL != nil {
-		return p.URL, p.ContentType, p.ContentDisposition
+		return p.URL, p.ContentType, p.ContentDisposition, p.ContentLength
 	}
 	if p := probe(http.MethodGet, true); p.URL != nil {
-		return p.URL, p.ContentType, p.ContentDisposition
+		return p.URL, p.ContentType, p.ContentDisposition, p.ContentLength
 	}
-	return u, "", ""
+	return u, "", "", -1
 }
 
 func isHTMLContentType(ct string) bool {
